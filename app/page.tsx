@@ -45,8 +45,8 @@ export default function Home() {
     setAlreadyDone(false);
 
     try {
-      // Check if this file has already been analysed
-      const existing = await fetch(`/api/history/single?fileId=${encodeURIComponent(fileId.trim())}`);
+      // Check if this file has already been analysed — bypass browser cache for freshness
+      const existing = await fetch(`/api/history/single?fileId=${encodeURIComponent(fileId.trim())}`, { cache: "no-store" });
       const existingData = await existing.json();
       if (existingData.analysis) {
         setLoading(false);
