@@ -36,7 +36,7 @@ export async function fetchSingleAnalysis(fileId: string): Promise<{
   try {
     const res = await fetch(
       `${APPS_SCRIPT_URL}?action=single&fileId=${encodeURIComponent(fileId)}`,
-      { next: { revalidate: config.cache.historyRevalidateSeconds } }
+      { cache: "no-store" }
     );
     return await res.json();
   } catch (err) {

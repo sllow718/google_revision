@@ -31,18 +31,30 @@ function InstructionCard() {
 
 export default function Home() {
   const router = useRouter();
-  const [fileId, setFileId] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [queued, setQueued]   = useState(false);
-  const [error, setError]     = useState("");
+  const [fileId, setFileId]     = useState("");
+  const [loading, setLoading]   = useState(false);
+  const [queued, setQueued]     = useState(false);
+  const [alreadyDone, setAlreadyDone] = useState(false);
+  const [error, setError]       = useState("");
 
   const handleAnalyze = async () => {
     if (!fileId.trim()) return;
     setLoading(true);
     setError("");
     setQueued(false);
+    setAlreadyDone(false);
 
     try {
+      // Check if this file has already been analysed
+      const existing = await fetch(`/api/history/single?fileId=${encodeURIComponent(fileId.trim())}`);
+      const existingData = await existing.json();
+      if (existingData.analysis) {
+        setLoading(false);
+        setAlreadyDone(true);
+        setTimeout(() => router.push("/history"), 1500);
+        return;
+      }
+
       const res  = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -97,7 +109,7 @@ export default function Home() {
             <input
               type="text" value={fileId} onChange={(e) => setFileId(e.target.value)}
               placeholder="1BxiMVs0XRA5nFMdKvBdBZjgmUUq..."
-              disabled={loading || queued}
+              disabled={loading || queued || alreadyDone}
               className="w-full h-10 px-3 border border-gray-200 rounded-lg text-sm font-mono focus:outline-none focus:border-gray-400 bg-gray-50 text-gray-900 disabled:opacity-50"
             />
             <p className="text-xs text-gray-400 mt-1.5">
@@ -111,6 +123,13 @@ export default function Home() {
             </div>
           )}
 
+          {alreadyDone && (
+            <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 text-sm text-blue-800">
+              <p className="font-medium">Already analysed!</p>
+              <p className="text-xs text-blue-600 mt-0.5">Redirecting to Past Analyses to view the result.</p>
+            </div>
+          )}
+
           {queued && (
             <div className="bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-sm text-green-800">
               <p className="font-medium">Analysis queued!</p>
@@ -120,7 +139,7 @@ export default function Home() {
 
           <button
             onClick={handleAnalyze}
-            disabled={!fileId.trim() || loading || queued}
+            disabled={!fileId.trim() || loading || queued || alreadyDone}
             className="w-full h-11 bg-gray-900 text-white rounded-lg text-sm font-medium hover:bg-gray-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
           >
             {loading && (

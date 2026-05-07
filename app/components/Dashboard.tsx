@@ -107,7 +107,15 @@ function RevisionDetail({ rev, colors, userSummary }: { rev: RevisionEntry; colo
         </div>
       )}
 
-      {rev.diff && !rev.error && (
+      {rev.diffTruncated && (
+        <div className="px-5 py-4 bg-amber-50">
+          <p className="text-xs text-amber-700">
+            This revision contains too much text to display the full diff.
+            Word counts above are accurate.
+          </p>
+        </div>
+      )}
+      {rev.diff && !rev.error && !rev.diffTruncated && (
         <div className="divide-y divide-gray-50">
           {rev.diff.added.length > 0 && (
             <div className="px-5 py-4">
@@ -142,10 +150,41 @@ function RevisionDetail({ rev, colors, userSummary }: { rev: RevisionEntry; colo
   );
 }
 
-export default function Dashboard({ result, onReset }: { result: AnalysisResult; onReset: () => void }) {
+export default function Dashboard({
+  result,
+  onReset,
+  onReanalyse,
+  pendingUpdate = false,
+}: {
+  result: AnalysisResult;
+  onReset: () => void;
+  onReanalyse?: (fileId: string) => void;
+  pendingUpdate?: boolean;
+}) {
   const [activeTab, setActiveTab] = useState<"summary" | "revisions">(config.ui.defaultTab);
   const [selectedRev, setSelectedRev] = useState<RevisionEntry | null>(null);
+  const [reanalysing, setReanalysing] = useState(false);
   const colors = COLORS;
+
+  const handleReanalyse = () => {
+    if (reanalysing || !result.revisions.length) return;
+    const lastRev = result.revisions[result.revisions.length - 1];
+    setReanalysing(true);
+
+    // Fire the API call without awaiting — navigate immediately
+    fetch("/api/analyze", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        fileId:             result.fileId,
+        sinceRevisionId:    lastRev.revisionId,
+        sinceRevisionIndex: lastRev.revisionIndex,
+      }),
+    }).catch(() => {});
+
+    if (onReanalyse) onReanalyse(result.fileId);
+    else onReset();
+  };
 
   const totalWords = result.userSummary.reduce((s, u) => s + u.totalWordsAdded, 0);
   const totalRevs = result.totalRevisions;
@@ -159,6 +198,13 @@ export default function Dashboard({ result, onReset }: { result: AnalysisResult;
           <button onClick={onReset} className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-900 transition-colors">
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" /></svg>
             New analysis
+          </button>
+          <div className="h-4 w-px bg-gray-200" />
+          <button onClick={handleReanalyse} disabled={reanalysing || pendingUpdate} className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-900 disabled:opacity-50 transition-colors">
+            <svg className={`w-4 h-4 ${reanalysing || pendingUpdate ? "animate-spin" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            {pendingUpdate ? "Update in progress..." : reanalysing ? "Queuing..." : "Re-analyse"}
           </button>
           <div className="h-4 w-px bg-gray-200" />
           <div className="flex-1 min-w-0">

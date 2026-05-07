@@ -254,13 +254,26 @@ export default function HistoryClient({
   fetchError?: string;
 }) {
   const router    = useRouter();
-  const [selected, setSelected]   = useState<AnalysisResult | null>(null);
-  const [loadingId, setLoadingId] = useState<string | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
-  const [detailError, setDetailError] = useState("");
+  const [selected, setSelected]           = useState<AnalysisResult | null>(null);
+  const [loadingId, setLoadingId]         = useState<string | null>(null);
+  const [refreshing, setRefreshing]       = useState(false);
+  const [detailError, setDetailError]     = useState("");
+  const [optimisticFileId, setOptimisticFileId] = useState<string | null>(null);
 
   const activePending = pendingJobs.filter((j) => j.status !== "error");
   const sorted = [...analyses].reverse();
+
+  // True when there is a real or optimistic pending job for this fileId
+  const isPendingUpdate = (fileId: string) =>
+    fileId === optimisticFileId ||
+    activePending.some((j) => j.fileId === fileId);
+
+  // Clear the optimistic marker once a real pending job for that fileId appears
+  useEffect(() => {
+    if (optimisticFileId && pendingJobs.some((j) => j.fileId === optimisticFileId)) {
+      setOptimisticFileId(null);
+    }
+  }, [pendingJobs, optimisticFileId]);
 
   const openAnalysis = async (fileId: string) => {
     setLoadingId(fileId);
@@ -284,7 +297,26 @@ export default function HistoryClient({
     }
   };
 
-  if (selected) return <Dashboard result={selected} onReset={() => setSelected(null)} />;
+  if (selected) return (
+    <Dashboard
+      result={selected}
+      onReset={() => setSelected(null)}
+      onReanalyse={(fileId) => { setSelected(null); setOptimisticFileId(fileId); }}
+      pendingUpdate={isPendingUpdate(selected.fileId)}
+    />
+  );
+
+  if (loadingId) return (
+    <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+      <div className="text-center">
+        <svg className="w-8 h-8 animate-spin text-gray-400 mx-auto mb-3" fill="none" viewBox="0 0 24 24">
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+        </svg>
+        <p className="text-sm text-gray-500">Loading analysis…</p>
+      </div>
+    </div>
+  );
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -333,7 +365,7 @@ export default function HistoryClient({
           </div>
         )}
 
-        {/* Live pending / error cards */}
+        {/* Live pending / error cards (new jobs only — not re-analyses) */}
         {pendingJobs.length > 0 && (
           <div className="space-y-3 mb-6">
             {pendingJobs.map((job) => (
@@ -362,18 +394,32 @@ export default function HistoryClient({
         {/* Completed analysis cards */}
         {sorted.length > 0 && (
           <div className="space-y-3">
-            {sorted.map((a) => (
+            {sorted.map((a) => {
+              const pending = isPendingUpdate(a.fileId);
+              return (
               <div key={a.fileId} onClick={() => !loadingId && openAnalysis(a.fileId)}
-                className="bg-white border border-gray-200 rounded-xl p-5 cursor-pointer hover:border-gray-400 hover:shadow-sm transition-all group">
+                className={`bg-white border rounded-xl p-5 cursor-pointer hover:shadow-sm transition-all group ${pending ? "border-amber-300" : "border-gray-200 hover:border-gray-400"}`}>
                 <div className="flex items-start gap-4">
-                  <div className="w-10 h-10 bg-gray-100 rounded-xl flex items-center justify-center flex-shrink-0 group-hover:bg-gray-200 transition-colors">
-                    <svg className="w-5 h-5 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                    </svg>
+                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 transition-colors ${pending ? "bg-amber-50" : "bg-gray-100 group-hover:bg-gray-200"}`}>
+                    {pending ? (
+                      <svg className="w-5 h-5 text-amber-500 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                      </svg>
+                    ) : (
+                      <svg className="w-5 h-5 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                      </svg>
+                    )}
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-3 mb-1 flex-wrap">
                       <p className="text-sm font-mono text-gray-700 truncate">{a.fileId}</p>
+                      {pending && (
+                        <span className="text-xs bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded-full flex-shrink-0">
+                          Pending update
+                        </span>
+                      )}
                       {a.exportErrors > 0 && (
                         <span className="text-xs bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded-full flex-shrink-0">
                           {a.exportErrors} export error{a.exportErrors > 1 ? "s" : ""}
@@ -423,7 +469,8 @@ export default function HistoryClient({
                   </div>
                 </div>
               </div>
-            ))}
+            );
+            })}
           </div>
         )}
       </div>

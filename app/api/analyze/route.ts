@@ -39,17 +39,19 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const { fileId: rawFileId } = await req.json();
+    const { fileId: rawFileId, sinceRevisionId, sinceRevisionIndex } = await req.json();
     const fileId = (rawFileId as string)?.trim();
 
     if (!fileId) return Response.json({ error: "No file ID provided" }, { status: 400 });
 
-    // Forward to Apps Script — returns jobId immediately
-    // Apps Script then runs the full analysis (up to 6 min) synchronously
+    const scriptBody: Record<string, unknown> = { action: "start", fileId, serviceAccountJson };
+    if (sinceRevisionId)          scriptBody.sinceRevisionId    = sinceRevisionId;
+    if (sinceRevisionIndex != null) scriptBody.sinceRevisionIndex = sinceRevisionIndex;
+
     const resp = await fetch(APPS_SCRIPT_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "start", fileId, serviceAccountJson }),
+      body: JSON.stringify(scriptBody),
     });
 
     const contentType = resp.headers.get("content-type") ?? "";

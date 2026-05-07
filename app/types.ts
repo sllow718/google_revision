@@ -22,6 +22,7 @@ export interface RevisionEntry {
   hasChanges: boolean;
   diff?: RevisionDiff;
   error?: string;
+  diffTruncated?: boolean;
 }
 
 export interface UserSummary {

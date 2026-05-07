@@ -27,9 +27,10 @@
 
 // ── Constants ─────────────────────────────────────────────────────
 
-var SHEET_NAME   = "RevisionAnalyses";
-var JOBS_SHEET   = "Jobs";
-var RESULT_SHEET = "ResultCache";
+var SHEET_NAME    = "RevisionAnalyses";
+var JOBS_SHEET    = "Jobs";
+var RESULT_SHEET  = "ResultCache";
+var ENTRIES_SHEET = "RevisionEntries"; // permanent per-revision diff storage (replaces revisionsJson cell)
 var REV_CHUNK_SIZE = 8000; // chars per Script Property chunk for revision list
 
 var TZ_OFFSET_HOURS = 8;
@@ -61,6 +62,11 @@ function getOrCreateSpreadsheet() {
   return ss;
 }
 
+// Run this function directly from the Apps Script editor to create/update sheets.
+function setup() {
+  initSheets(getOrCreateSpreadsheet());
+}
+
 function initSheets(ss) {
   var hdr = function(sheet, cols) {
     sheet.appendRow(cols);
@@ -82,8 +88,11 @@ function initSheets(ss) {
   var res = ss.getSheetByName(RESULT_SHEET) || ss.insertSheet(RESULT_SHEET);
   if (res.getLastRow() === 0) hdr(res, ["jobId","revisionIndex","entryJson"]);
 
+  var ent = ss.getSheetByName(ENTRIES_SHEET) || ss.insertSheet(ENTRIES_SHEET);
+  if (ent.getLastRow() === 0) hdr(ent, ["fileId","revisionIndex","entryJson"]);
+
   var def = ss.getSheetByName("Sheet1");
-  if (def && ss.getSheets().length > 3) try { ss.deleteSheet(def); } catch(e) {}
+  if (def && ss.getSheets().length > 4) try { ss.deleteSheet(def); } catch(e) {}
 }
 
 // ── Generic sheet helpers ─────────────────────────────────────────
@@ -163,10 +172,31 @@ function deleteRevisions_(props, jobId) {
 
 // ── ResultCache helpers ───────────────────────────────────────────
 
+// Serialize one revision entry, dropping diff text if the result would exceed
+// Sheets' 50 K character cell limit. Stats are always preserved.
+var ENTRY_CELL_LIMIT = 45000;
+function serializeEntry_(entry) {
+  var json = JSON.stringify(entry);
+  if (json.length <= ENTRY_CELL_LIMIT) return json;
+  var slim = {
+    revisionIndex:   entry.revisionIndex,
+    revisionId:      entry.revisionId,
+    modifiedTime:    entry.modifiedTime,
+    modifiedTimeSGT: entry.modifiedTimeSGT,
+    modifiedBy:      entry.modifiedBy,
+    isFirstRevision: entry.isFirstRevision,
+    hasChanges:      entry.hasChanges,
+    diffTruncated:   true,
+  };
+  if (entry.diff)  slim.diff  = { added: [], removed: [], stats: entry.diff.stats };
+  if (entry.error) slim.error = entry.error;
+  return JSON.stringify(slim);
+}
+
 function appendEntry(ss, jobId, revisionIndex, entry) {
   var sheet = ss.getSheetByName(RESULT_SHEET);
   if (!sheet) { initSheets(ss); sheet = ss.getSheetByName(RESULT_SHEET); }
-  sheet.appendRow([jobId, revisionIndex, JSON.stringify(entry)]);
+  sheet.appendRow([jobId, revisionIndex, serializeEntry_(entry)]);
 }
 
 function loadEntries(ss, jobId) {
@@ -213,6 +243,42 @@ function deleteJobCache(ss, jobId) {
     }
     SpreadsheetApp.flush();
   }
+}
+
+// ── RevisionEntries — permanent per-fileId diff storage ──────────
+// Avoids the 50 K Sheets cell limit that would apply to revisionsJson.
+
+function saveRevisionEntries_(ss, fileId, allEntries) {
+  var sheet = ss.getSheetByName(ENTRIES_SHEET);
+  if (!sheet) { initSheets(ss); sheet = ss.getSheetByName(ENTRIES_SHEET); }
+
+  // Build full rewrite: keep rows for other fileIds, replace rows for this one
+  var existing = sheet.getLastRow() > 1 ? sheet.getDataRange().getValues().slice(1) : [];
+  var kept     = existing.filter(function(r) { return r[0] !== fileId; });
+  var newRows  = allEntries.map(function(e) {
+    return [fileId, e.revisionIndex, serializeEntry_(e)];
+  });
+  var all = kept.concat(newRows);
+
+  sheet.clearContents();
+  sheet.appendRow(["fileId","revisionIndex","entryJson"]);
+  sheet.getRange(1, 1, 1, 3).setFontWeight("bold").setBackground("#1a1a18").setFontColor("#fff");
+  if (all.length > 0) sheet.getRange(2, 1, all.length, 3).setValues(all);
+  SpreadsheetApp.flush();
+}
+
+function loadRevisionEntries_(ss, fileId) {
+  var sheet = ss.getSheetByName(ENTRIES_SHEET);
+  if (!sheet || sheet.getLastRow() <= 1) return [];
+  var data    = sheet.getDataRange().getValues();
+  var entries = [];
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][0] === fileId) {
+      try { entries.push(JSON.parse(data[i][2])); } catch(e) {}
+    }
+  }
+  entries.sort(function(a, b) { return a.revisionIndex - b.revisionIndex; });
+  return entries;
 }
 
 // ── Diff engine ───────────────────────────────────────────────────
@@ -293,19 +359,24 @@ function exportRevisionText(fileId, revisionId, accessToken) {
 // ── Save final result to Analyses sheet ──────────────────────────
 
 function saveResults(ss, fileId, analysedAt, userSummary, revisionEntries, exportErrorCount) {
-  var main           = ss.getSheetByName(SHEET_NAME);
+  var main              = ss.getSheetByName(SHEET_NAME);
   var totalWordsAdded   = userSummary.reduce(function(s,u){ return s + u.totalWordsAdded; }, 0);
   var totalWordsRemoved = userSummary.reduce(function(s,u){ return s + u.totalWordsRemoved; }, 0);
+  // revisionsJson (col 10) is intentionally left empty — full diff data lives in
+  // the RevisionEntries sheet to avoid the 50 K Sheets cell-character limit.
   var rowData = [
     fileId, analysedAt, "Asia/Singapore (UTC+8)",
     revisionEntries.length, exportErrorCount, userSummary.length,
     totalWordsAdded, totalWordsRemoved,
-    JSON.stringify(userSummary), JSON.stringify(revisionEntries),
+    JSON.stringify(userSummary), "",
   ];
   var existingRow = findRow(main, 0, fileId);
   if (existingRow > 0) main.getRange(existingRow, 1, 1, rowData.length).setValues([rowData]);
   else main.appendRow(rowData);
   SpreadsheetApp.flush();
+
+  // Store full revision entries (with diff text) in dedicated sheet
+  saveRevisionEntries_(ss, fileId, revisionEntries);
 }
 
 // ── Service account auth ──────────────────────────────────────────
@@ -380,6 +451,7 @@ function runPendingAnalyses() {
       // Job finished (done or errored) — clean up all Script Properties and cache
       props.deleteProperty("sa_" + jobId);
       props.deleteProperty("cursor_" + jobId);
+      props.deleteProperty("since_" + jobId);
       deleteRevisions_(props, jobId);
       deleteJobCache(ss, jobId);
     }
@@ -435,12 +507,30 @@ function processChunk_(ss, jobId, fileId, saJson, props, startTime) {
       return false;
     }
 
+    // Slice to only new revisions when re-analysing
+    var sinceJson = props.getProperty("since_" + jobId);
+    if (sinceJson) {
+      var sinceData = JSON.parse(sinceJson);
+      var sinceIdx  = -1;
+      for (var s = 0; s < revisions.length; s++) {
+        if (revisions[s].id === sinceData.id) { sinceIdx = s; break; }
+      }
+      if (sinceIdx >= 0) {
+        revisions = revisions.slice(sinceIdx + 1);
+      } else {
+        // Anchor not found — fall back to full re-analysis
+        props.deleteProperty("since_" + jobId);
+        sinceJson = null;
+      }
+    }
+
     saveRevisions_(props, jobId, revisions);
     updateJob(ss, jobId, "exporting",
-      "Found " + revisions.length + " revisions. Exporting...", cursor, revisions.length, null);
+      "Found " + revisions.length + " new revisions. Exporting...", cursor, revisions.length, null);
   }
 
-  var total = revisions.length;
+  var total    = revisions.length;
+  var sinceJson = props.getProperty("since_" + jobId);
 
   // lastGoodText is never stored (document text can exceed the 50 K Sheets cell
   // limit and the 9 KB Script Property limit). Re-export the previous revision
@@ -451,6 +541,12 @@ function processChunk_(ss, jobId, fileId, saJson, props, startTime) {
       var recovered = exportRevisionText(fileId, revisions[k].id, token);
       if (typeof recovered === "string") { lastGoodText = recovered; break; }
     }
+  } else if (sinceJson) {
+    // Re-analysis first chunk: seed lastGoodText from the anchor revision
+    // so the first new revision diffs correctly against the previous content.
+    var sd0  = JSON.parse(sinceJson);
+    var seed = exportRevisionText(fileId, sd0.id, token);
+    if (typeof seed === "string") lastGoodText = seed;
   }
 
   // ── Export loop ───────────────────────────────────────────────
@@ -505,7 +601,23 @@ function processChunk_(ss, jobId, fileId, saJson, props, startTime) {
   // ── All revisions exported — assemble final result ────────────
   updateJob(ss, jobId, "running", "Building summary...", total, total, null);
 
-  var allEntries   = loadEntries(ss, jobId);
+  var allEntries  = loadEntries(ss, jobId); // new entries from this job only
+  var sinceJson4  = props.getProperty("since_" + jobId);
+  if (sinceJson4) {
+    var sd4       = JSON.parse(sinceJson4);
+    var baseIndex = sd4.index || 0;
+
+    // Patch loop-local revisionIndex (1-based within the slice) → global index
+    allEntries.forEach(function(e, i) {
+      e.revisionIndex  = baseIndex + i + 1;
+      e.isFirstRevision = false;
+    });
+
+    // Load existing revisions from RevisionEntries sheet (col 10 is now empty)
+    var existingRevs = loadRevisionEntries_(ss, fileId);
+    allEntries = existingRevs.concat(allEntries);
+    allEntries.sort(function(a, b) { return a.revisionIndex - b.revisionIndex; });
+  }
   var userMap      = {};
   var exportErrors = 0;
 
@@ -536,6 +648,8 @@ function processChunk_(ss, jobId, fileId, saJson, props, startTime) {
 
   saveResults(ss, fileId, analysedAt, userSummary, allEntries, exportErrors);
 
+  // Revision detail is loaded via doGet?action=single — omit it from
+  // the Jobs resultJson to stay well under the 50 K cell-character limit.
   updateJob(ss, jobId, "done", "Analysis complete", total, total, JSON.stringify({
     fileId:         fileId,
     generatedAt:    analysedAt,
@@ -543,7 +657,6 @@ function processChunk_(ss, jobId, fileId, saJson, props, startTime) {
     totalRevisions: allEntries.length,
     exportErrors:   exportErrors,
     userSummary:    userSummary,
-    revisions:      allEntries,
   }));
 
   return false; // done
@@ -611,12 +724,20 @@ function doGet(e) {
       var data   = sheet.getDataRange().getValues();
       var row    = data.slice(1).filter(function(r){ return r[0] === fileId; })[0];
       if (!row) return cors(ContentService.createTextOutput(JSON.stringify({ error: "Not found" })));
+
+      // Load from RevisionEntries sheet (current approach, no cell-size limit).
+      // Fall back to the legacy revisionsJson column for analyses saved before this fix.
+      var revisions = loadRevisionEntries_(ss, fileId);
+      if (!revisions.length && row[9]) {
+        try { revisions = JSON.parse(row[9]); } catch(ex) {}
+      }
+
       return cors(ContentService.createTextOutput(JSON.stringify({
         analysis: {
           fileId: row[0], analysedAt: row[1], timezone: row[2],
           totalRevisions: row[3], exportErrors: row[4],
           userSummary: JSON.parse(row[8] || "[]"),
-          revisions:   JSON.parse(row[9] || "[]"),
+          revisions:   revisions,
         }
       })));
     }
@@ -645,8 +766,15 @@ function doPost(e) {
       var jobId = "job_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7);
       createJob(jobId, fileId);
 
-      // Stash SA for the trigger to pick up
-      PropertiesService.getScriptProperties().setProperty("sa_" + jobId, serviceAccountJson);
+      // Stash SA and optional incremental-analysis anchor for the trigger to pick up
+      var props_ = PropertiesService.getScriptProperties();
+      props_.setProperty("sa_" + jobId, serviceAccountJson);
+      var sinceRevisionId_    = body.sinceRevisionId    || null;
+      var sinceRevisionIndex_ = body.sinceRevisionIndex != null ? Number(body.sinceRevisionIndex) : null;
+      if (sinceRevisionId_) {
+        props_.setProperty("since_" + jobId,
+          JSON.stringify({ id: sinceRevisionId_, index: sinceRevisionIndex_ }));
+      }
 
       // Always create a trigger for this job. Concurrent triggers are safe
       // because runPendingAnalyses uses LockService — only one runs at a time,
