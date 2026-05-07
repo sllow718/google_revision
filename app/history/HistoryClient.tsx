@@ -258,10 +258,24 @@ export default function HistoryClient({
   const [loadingId, setLoadingId]         = useState<string | null>(null);
   const [refreshing, setRefreshing]       = useState(false);
   const [detailError, setDetailError]     = useState("");
-  const [optimisticFileId, setOptimisticFileId] = useState<string | null>(null);
+  const [optimisticFileId, setOptimisticFileIdState] = useState<string | null>(null);
+
+  // Persist optimisticFileId in sessionStorage so it survives page navigation
+  const setOptimisticFileId = (fileId: string | null) => {
+    if (fileId) sessionStorage.setItem("reanalyseFileId", fileId);
+    else        sessionStorage.removeItem("reanalyseFileId");
+    setOptimisticFileIdState(fileId);
+  };
+
+  // Restore from sessionStorage on mount
+  useEffect(() => {
+    const stored = sessionStorage.getItem("reanalyseFileId");
+    if (stored) setOptimisticFileIdState(stored);
+  }, []);
 
   const activePending = pendingJobs.filter((j) => j.status !== "error");
-  const sorted = [...analyses].reverse();
+  const sorted        = [...analyses].reverse();
+  const existingIds   = new Set(sorted.map((a) => a.fileId));
 
   // True when there is a real or optimistic pending job for this fileId
   const isPendingUpdate = (fileId: string) =>
@@ -274,6 +288,43 @@ export default function HistoryClient({
       setOptimisticFileId(null);
     }
   }, [pendingJobs, optimisticFileId]);
+
+  // Poll re-analysis jobs silently (they have no LivePendingCard to do this).
+  // When one finishes, refresh the page and clear the pending badge.
+  const reanalysisJobIds = activePending
+    .filter((j) => existingIds.has(j.fileId))
+    .map((j) => j.jobId)
+    .join(",");
+
+  useEffect(() => {
+    if (!reanalysisJobIds) return;
+    const ids = reanalysisJobIds.split(",");
+    let cancelled = false;
+
+    const poll = async () => {
+      for (const jobId of ids) {
+        if (cancelled) return;
+        try {
+          const res  = await fetch(`/api/job/status?jobId=${encodeURIComponent(jobId)}`);
+          const data = await res.json();
+          if (data.status === "done" || data.status === "error") {
+            if (!cancelled) {
+              sessionStorage.removeItem("reanalyseFileId");
+              setOptimisticFileIdState(null);
+              router.refresh();
+            }
+            return;
+          }
+        } catch { /* network blip — keep polling */ }
+      }
+    };
+
+    poll();
+    const id = setInterval(poll, 10_000);
+    return () => { cancelled = true; clearInterval(id); };
+  // reanalysisJobIds is a stable string; router is stable
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reanalysisJobIds]);
 
   const openAnalysis = async (fileId: string) => {
     setLoadingId(fileId);
@@ -365,12 +416,15 @@ export default function HistoryClient({
           </div>
         )}
 
-        {/* Live pending / error cards (new jobs only — not re-analyses) */}
-        {pendingJobs.length > 0 && (
+        {/* Live pending / error cards — new analyses only.
+            Re-analysis jobs (fileId already in sorted) show as a badge on the existing card. */}
+        {pendingJobs.some((j) => !existingIds.has(j.fileId)) && (
           <div className="space-y-3 mb-6">
-            {pendingJobs.map((job) => (
-              <LivePendingCard key={job.jobId} initialJob={job} />
-            ))}
+            {pendingJobs
+              .filter((job) => !existingIds.has(job.fileId))
+              .map((job) => (
+                <LivePendingCard key={job.jobId} initialJob={job} />
+              ))}
           </div>
         )}
 
