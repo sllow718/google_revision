@@ -36,14 +36,14 @@ function LivePendingCard({ initialJob }: { initialJob: PendingJob }) {
 
   // Elapsed-time ticker (updates every second for the UI)
   useEffect(() => {
-    if (job.status === "done" || job.status === "error") return;
+    if (job.status === "error") return;
     const id = setInterval(() => setElapsed((e) => e + 1), 1000);
     return () => clearInterval(id);
   }, [job.status]);
 
   // Poll job status
   useEffect(() => {
-    if (job.status === "done" || job.status === "error") return;
+    if (job.status === "error") return;
 
     const poll = async () => {
       if (pollingRef.current) return;
